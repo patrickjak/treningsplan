@@ -307,6 +307,323 @@ function renderPlan() {
     : '<p>Alle aktiviteter i perioden er knyttet til planen.</p>';
 }
 
+// ---------- Ukekalender ----------
+let calendarMonday = null;
+let calendarPlanId = null;
+
+const sportColors = {
+  'Løping': '#15803d',
+  'Sykling': '#1d4ed8',
+  'Svømming': '#087e8b',
+  'Styrke': '#7e22ce',
+  'Langrenn': '#b45309',
+  'Annen utholdenhet': '#be185d',
+  'Annet': '#475569'
+};
+
+function calendarDate(value) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day, 12);
+}
+
+function calendarDateKey(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-');
+}
+
+function calendarAddDays(date, count) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + count);
+  return result;
+}
+
+function calendarWeekStart(date) {
+  return calendarAddDays(date, -((date.getDay() + 6) % 7));
+}
+
+function calendarDuration(minutes) {
+  const total = Math.round(Number(minutes) || 0);
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  return hours ? `${hours} t${rest ? ` ${rest} min` : ''}` : `${rest} min`;
+}
+
+function calendarButton(text, action) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = text;
+  button.addEventListener('click', action);
+  return button;
+}
+
+function calendarChangeWeek(direction) {
+  calendarMonday = calendarAddDays(calendarMonday, direction * 7);
+  renderCalendar();
+}
+
+function calendarGoToToday() {
+  calendarMonday = calendarWeekStart(new Date());
+  renderCalendar();
+}
+
+function calendarPrepareSession(date) {
+  $('sDate').value = date;
+  $('sTitle').scrollIntoView({
+    behavior: 'smooth',
+    block: 'center'
+  });
+  $('sTitle').focus();
+}
+
+function renderCalendar() {
+  if (!currentPlan) return;
+
+  // Opprett kalenderen én gang.
+  let root = $('trainingCalendar');
+
+  if (!root) {
+    const style = document.createElement('style');
+    style.textContent = `
+      .calendar-toolbar {
+        display:flex; justify-content:space-between;
+        align-items:center; gap:12px; flex-wrap:wrap;
+      }
+      .calendar-toolbar h2 { margin:0 0 4px; }
+      .calendar-caption { color:#64748b; font-size:14px; }
+      .calendar-navigation { display:flex; gap:6px; flex-wrap:wrap; }
+      .calendar-grid {
+        display:grid; grid-template-columns:repeat(7,minmax(0,1fr));
+        gap:8px; margin-top:18px;
+      }
+      .calendar-day {
+        background:#f8fafc; border:1px solid #e2e8f0;
+        border-radius:12px; min-height:210px;
+        padding:9px; display:flex; flex-direction:column;
+        gap:9px; min-width:0;
+      }
+      .calendar-day.is-today {
+        border:2px solid #2563eb;
+        background:#eff6ff;
+      }
+      .calendar-day.outside-plan {
+        background:#f1f5f9;
+        border-style:dashed;
+      }
+      .calendar-day-heading {
+        font-size:13px; font-weight:700; color:#334155;
+        text-transform:capitalize;
+      }
+      .calendar-session {
+        background:white; border:1px solid #e2e8f0;
+        border-left:4px solid var(--sport-color);
+        border-radius:9px; padding:9px;
+        overflow-wrap:anywhere;
+        box-shadow:0 2px 5px rgba(15,23,42,.04);
+      }
+      .calendar-sport {
+        color:var(--sport-color); font-size:12px;
+        font-weight:700; margin-bottom:5px;
+      }
+      .calendar-title {
+        font-size:14px; font-weight:600; white-space:pre-wrap;
+      }
+      .calendar-details {
+        font-size:12px; color:#475569; margin-top:7px;
+      }
+      .calendar-empty {
+        color:#64748b; font-size:12px; padding:8px 0;
+      }
+      .calendar-add {
+        margin-top:auto; background:transparent; color:#1f4e79;
+        border:1px dashed #94a3b8; font-size:12px;
+        width:100%;
+      }
+      .calendar-legend {
+        display:flex; flex-wrap:wrap; gap:12px;
+        margin-top:16px; font-size:12px;
+      }
+      @media(max-width:800px) {
+        .calendar-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .calendar-day { min-height:160px; }
+      }
+      @media(max-width:480px) {
+        .calendar-grid { grid-template-columns:1fr; }
+        .calendar-day { min-height:110px; }
+      }
+    `;
+    document.head.appendChild(style);
+
+    root = document.createElement('section');
+    root.id = 'trainingCalendar';
+    root.className = 'card';
+
+    // Plasser kalenderen mellom planoppsummeringen og øktskjemaet.
+    $('planView').insertBefore(root, $('planView').children[1]);
+  }
+
+  // Velg en relevant uke når en annen plan åpnes.
+  if (calendarPlanId !== currentPlan.id) {
+    calendarPlanId = currentPlan.id;
+    const now = calendarDateKey(new Date());
+    const start = now >= currentPlan.start_date &&
+                  now <= currentPlan.end_date
+      ? now
+      : currentPlan.start_date;
+
+    calendarMonday = calendarWeekStart(calendarDate(start));
+  }
+
+  root.replaceChildren();
+
+  const weekEnd = calendarAddDays(calendarMonday, 6);
+  const firstKey = calendarDateKey(calendarMonday);
+  const lastKey = calendarDateKey(weekEnd);
+  const todayKey = calendarDateKey(new Date());
+
+  const weekSessions = sessions.filter(session =>
+    session.date >= firstKey && session.date <= lastKey
+  );
+
+  const totalMinutes = weekSessions.reduce(
+    (sum, session) => sum + (Number(session.planned_min) || 0),
+    0
+  );
+
+  const missingDuration = weekSessions.filter(
+    session => session.planned_min == null
+  ).length;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'calendar-toolbar';
+
+  const heading = document.createElement('div');
+  const title = document.createElement('h2');
+  title.textContent =
+    `${calendarMonday.toLocaleDateString('nb-NO', {
+      day: 'numeric', month: 'short'
+    })} – ${weekEnd.toLocaleDateString('nb-NO', {
+      day: 'numeric', month: 'short', year: 'numeric'
+    })}`;
+
+  const caption = document.createElement('div');
+  caption.className = 'calendar-caption';
+  caption.textContent =
+    `${weekSessions.length} planlagte økter · ` +
+    `${calendarDuration(totalMinutes)} planlagt` +
+    (missingDuration
+      ? ` · ${missingDuration} uten angitt varighet`
+      : '');
+
+  heading.append(title, caption);
+
+  const navigation = document.createElement('div');
+  navigation.className = 'calendar-navigation';
+  navigation.append(
+    calendarButton('← Forrige', () => calendarChangeWeek(-1)),
+    calendarButton('Denne uken', calendarGoToToday),
+    calendarButton('Neste →', () => calendarChangeWeek(1))
+  );
+
+  toolbar.append(heading, navigation);
+  root.appendChild(toolbar);
+
+  const grid = document.createElement('div');
+  grid.className = 'calendar-grid';
+
+  for (let offset = 0; offset < 7; offset++) {
+    const date = calendarAddDays(calendarMonday, offset);
+    const key = calendarDateKey(date);
+    const inPlan = key >= currentPlan.start_date &&
+                   key <= currentPlan.end_date;
+
+    const day = document.createElement('div');
+    day.className = 'calendar-day';
+    if (key === todayKey) day.classList.add('is-today');
+    if (!inPlan) day.classList.add('outside-plan');
+
+    const dayHeading = document.createElement('div');
+    dayHeading.className = 'calendar-day-heading';
+    dayHeading.textContent = date.toLocaleDateString('nb-NO', {
+      weekday: 'short', day: 'numeric', month: 'numeric'
+    }) + (key === todayKey ? ' · I dag' : '');
+    day.appendChild(dayHeading);
+
+    const dailySessions = weekSessions.filter(s => s.date === key);
+
+    for (const session of dailySessions) {
+      const card = document.createElement('article');
+      card.className = 'calendar-session';
+      card.style.setProperty(
+        '--sport-color',
+        sportColors[session.sport] || sportColors.Annet
+      );
+
+      const sport = document.createElement('div');
+      sport.className = 'calendar-sport';
+      sport.textContent = session.sport;
+
+      const name = document.createElement('div');
+      name.className = 'calendar-title';
+      name.textContent = session.title || 'Planlagt økt';
+
+      const details = document.createElement('div');
+      details.className = 'calendar-details';
+      const parts = [];
+
+      if (session.planned_min != null) {
+        parts.push(calendarDuration(session.planned_min));
+      }
+      if (session.planned_km != null) {
+        parts.push(
+          Number(session.planned_km).toLocaleString('nb-NO') + ' km'
+        );
+      }
+      details.textContent = parts.join(' · ') || 'Ingen mengde angitt';
+
+      card.append(sport, name, details);
+      day.appendChild(card);
+    }
+
+    if (!dailySessions.length) {
+      const empty = document.createElement('div');
+      empty.className = 'calendar-empty';
+      empty.textContent = inPlan
+        ? 'Ingen planlagte økter'
+        : 'Utenfor planperioden';
+      day.appendChild(empty);
+    }
+
+    if (inPlan) {
+      const add = calendarButton(
+        '+ Legg til økt',
+        () => calendarPrepareSession(key)
+      );
+      add.className = 'calendar-add';
+      day.appendChild(add);
+    }
+
+    grid.appendChild(day);
+  }
+
+  root.appendChild(grid);
+
+  const legend = document.createElement('div');
+  legend.className = 'calendar-legend';
+
+  for (const sport of [...new Set(weekSessions.map(s => s.sport))]) {
+    const label = document.createElement('span');
+    label.style.color = sportColors[sport] || sportColors.Annet;
+    label.textContent = '● ' + sport;
+    legend.appendChild(label);
+  }
+
+  root.appendChild(legend);
+}
+
+  
 init();
 </script>
 </body>
