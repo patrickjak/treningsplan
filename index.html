@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Treningsplan</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#f4f6f8;color:#222}
+  header{background:#1f4e79;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+  main{max-width:1000px;margin:0 auto;padding:16px}
+  .card{background:#fff;border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  input,select,button{font-size:16px;padding:8px;margin:4px 0;border-radius:6px;border:1px solid #ccc;max-width:100%;box-sizing:border-box}
+  button{background:#1f4e79;color:#fff;border:none;cursor:pointer}
+  button.sec{background:#777}
+  button.del{background:#c62828;padding:4px 8px;font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  td,th{padding:6px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+  .ok{color:#2e7d32;font-weight:bold}.miss{color:#c62828;font-weight:bold}.part{color:#ef6c00;font-weight:bold}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+  .stats{display:flex;gap:12px;flex-wrap:wrap}
+  .stat{flex:1;min-width:140px;background:#eef3f8;border-radius:8px;padding:10px}
+  .stat b{display:block;font-size:22px}
+  .hidden{display:none}
+  .lista div{padding:8px 0;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;gap:8px}
+</style>
+</head>
+<body>
+
+<header>
+  <strong>Treningsplan</strong>
+  <span id="userInfo"></span>
+</header>
+
+<main>
+  <!-- LOGIN -->
+  <div id="authView" class="card hidden">
+    <h2>Logg inn</h2>
+    <input id="email" type="email" placeholder="E-post"><br>
+    <input id="pw" type="password" placeholder="Passord (minst 6 tegn)"><br>
+    <div class="row">
+      <button onclick="login()">Logg inn</button>
+      <button class="sec" onclick="signup()">Opprett konto</button>
+    </div>
+  </div>
+
+  <!-- APP -->
+  <div id="appView" class="hidden">
+    <div class="card">
+      <h2>Mine planer</h2>
+      <div id="planList" class="lista"></div>
+      <h3>Ny plan</h3>
+      <div class="row">
+        <input id="planName" placeholder="Navn, f.eks. Vårsesong 2027">
+        <input id="planStart" type="date">
+        <input id="planEnd" type="date">
+        <button onclick="createPlan()">Lag plan</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Importer aktiviteter fra Garmin</h2>
+      <p>I Garmin Connect: åpne aktiviteten → eksporter som <b>TCX</b>. Du kan velge flere filer samtidig.</p>
+      <input type="file" id="fileInput" accept=".tcx" multiple onchange="importFiles(this.files)">
+    </div>
+
+    <div id="planView" class="hidden">
+      <div class="card">
+        <h2 id="planTitle"></h2>
+        <div id="stats" class="stats"></div>
+      </div>
+
+      <div class="card">
+        <h3>Legg til økt i planen</h3>
+        <div class="row">
+          <input id="sDate" type="date">
+          <select id="sSport"></select>
+          <input id="sTitle" placeholder="Beskrivelse, f.eks. Rolig 10 km">
+          <input id="sKm" type="number" step="0.1" placeholder="Plan km">
+          <input id="sMin" type="number" placeholder="Plan minutter">
+          <button onclick="addSession()">Legg til</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Plan vs. faktisk</h3>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Dato</th><th>Idrett</th><th>Økt</th><th>Plan</th><th>Faktisk</th><th>Status</th><th></th></tr></thead>
+            <tbody id="compareBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Ikke knyttet til planen (importert)</h3>
+        <div id="unmatched" class="lista"></div>
+      </div>
+    </div>
+
+    <p><button class="sec" onclick="logout()">Logg ut</button></p>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+// ====== FYLL INN DISSE ======
+const SUPABASE_URL = 'https://psndaqabbwbecuyrnjgy.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_SOTnuKNTheOBm4Z3n3_76w_epS6ZOco';
+// ============================
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const SPORTS = ['Løping','Sykling','Svømming','Styrke','Langrenn','Annen utholdenhet','Annet'];
+let user = null, plans = [], currentPlan = null, sessions = [], activities = [];
+const $ = id => document.getElementById(id);
+const num = v => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+const fmt = (n, d=1) => (n === null || n === undefined) ? '–' : Number(n).toFixed(d);
+const today = () => new Date().toISOString().slice(0,10);
+
+// ---------- Oppstart og innlogging ----------
+async function init() {
+  $('sSport').innerHTML = SPORTS.map(s => `<option>${s}</option>`).join('');
+  const { data } = await sb.auth.getSession();
+  user = data.session?.user || null;
+  sb.auth.onAuthStateChange((_e, s) => { user = s?.user || null; render(); });
+  render();
+}
+
+async function login() {
+  const { error } = await sb.auth.signInWithPassword({ email: $('email').value, password: $('pw').value });
+  if (error) alert(error.message);
+}
+
+async function signup() {
+  const { error } = await sb.auth.signUp({ email: $('email').value, password: $('pw').value });
+  if (error) alert(error.message); else alert('Konto opprettet. Logg inn nå.');
+}
+
+async function logout() {
+  await sb.auth.signOut();
+  currentPlan = null;
+}
+
+function render() {
+  $('authView').classList.toggle('hidden', !!user);
+  $('appView').classList.toggle('hidden', !user);
+  $('userInfo').textContent = user ? user.email : '';
+  if (user) loadPlans();
+}
+
+// ---------- Planer ----------
+async function loadPlans() {
+  const { data, error } = await sb.from('plans').select('*').order('start_date', { ascending: false });
+  if (error) return alert(error.message);
+  plans = data;
+  $('planList').innerHTML = plans.length ? plans.map(p => `
+    <div><span><b>${p.name}</b> (${p.start_date} – ${p.end_date})</span>
+    <span><button onclick="openPlan('${p.id}')">Åpne</button>
+    <button class="del" onclick="deletePlan('${p.id}')">Slett</button></span></div>`).join('')
+    : '<p>Ingen planer ennå.</p>';
+}
+
+async function createPlan() {
+  const name = $('planName').value.trim(), start = $('planStart').value, end = $('planEnd').value;
+  if (!name || !start || !end) return alert('Fyll ut navn, start og slutt.');
+  const { error } = await sb.from('plans').insert({ user_id: user.id, name, start_date: start, end_date: end });
+  if (error) return alert(error.message);
+  $('planName').value = '';
+  loadPlans();
+}
+
+async function deletePlan(id) {
+  if (!confirm('Slette planen og alle øktene i den?')) return;
+  await sb.from('plans').delete().eq('id', id);
+  if (currentPlan?.id === id) { currentPlan = null; $('planView').classList.add('hidden'); }
+  loadPlans();
+}
+
+async function openPlan(id) {
+  currentPlan = plans.find(p => p.id === id);
+  if (!currentPlan) return;
+  const [s, a] = await Promise.all([
+    sb.from('sessions').select('*').eq('plan_id', id).order('date'),
+    sb.from('activities').select('*').gte('date', currentPlan.start_date).lte('date', currentPlan.end_date).order('date')
+  ]);
+  if (s.error || a.error) return alert((s.error || a.error).message);
+  sessions = s.data; activities = a.data;
+  $('sDate').value = currentPlan.start_date;
+  renderPlan();
+}
+
+// ---------- Økter ----------
+async function addSession() {
+  const row = {
+    plan_id: currentPlan.id, user_id: user.id, date: $('sDate').value, sport: $('sSport').value,
+    title: $('sTitle').value.trim(), planned_km: num($('sKm').value), planned_min: num($('sMin').value)
+  };
+  if (!row.date) return alert('Velg dato.');
+  const { error } = await sb.from('sessions').insert(row);
+  if (error) return alert(error.message);
+  $('sTitle').value = ''; $('sKm').value = ''; $('sMin').value = '';
+  openPlan(currentPlan.id);
+}
+
+async function deleteSession(id) {
+  await sb.from('sessions').delete().eq('id', id);
+  openPlan(currentPlan.id);
+}
+
+// ---------- Import av TCX fra Garmin ----------
+async function importFiles(files) {
+  const rows = [];
+  for (const f of files) {
+    try { rows.push(...parseTcx(await f.text())); }
+    catch (e) { alert('Kunne ikke lese ' + f.name); }
+  }
+  if (!rows.length) return;
+  const { error } = await sb.from('activities')
+    .upsert(rows.map(r => ({ ...r, user_id: user.id })), { onConflict: 'user_id,external_id' });
+  if (error) return alert(error.message);
+  alert(rows.length + ' aktivitet(er) importert.');
+  $('fileInput').value = '';
+  if (currentPlan) openPlan(currentPlan.id);
+}
+
+function tag(el, name) { const n = el?.getElementsByTagName(name)[0]; return n ? n.textContent : null; }
+
+function parseTcx(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('Ugyldig XML');
+  const map = { Running: 'Løping', Biking: 'Sykling', Swimming: 'Svømming', Other: 'Annet' };
+  return [...doc.getElementsByTagName('Activity')].map(a => {
+    const startedAt = tag(a, 'Id');
+    let dur = 0, dist = 0, cal = 0, hrSum = 0, hrDur = 0, maxHr = 0;
+    [...a.getElementsByTagName('Lap')].forEach(l => {
+      const t = parseFloat(tag(l, 'TotalTimeSeconds')) || 0;
+      dur += t;
+      dist += parseFloat(tag(l, 'DistanceMeters')) || 0;
+      cal += parseFloat(tag(l, 'Calories')) || 0;
+      const avgEl = l.getElementsByTagName('AverageHeartRateBpm')[0];
+      const avg = avgEl ? parseFloat(tag(avgEl, 'Value')) : NaN;
+      if (!isNaN(avg)) { hrSum += avg * t; hrDur += t; }
+      const maxEl = l.getElementsByTagName('MaximumHeartRateBpm')[0];
+      const mx = maxEl ? parseFloat(tag(maxEl, 'Value')) : NaN;
+      if (!isNaN(mx)) maxHr = Math.max(maxHr, mx);
+    });
+    return {
+      external_id: startedAt,
+      started_at: startedAt,
+      date: startedAt.slice(0, 10),
+      sport: map[a.getAttribute('Sport')] || 'Annet',
+      duration_min: +(dur / 60).toFixed(1),
+      distance_km: +(dist / 1000).toFixed(2),
+      avg_hr: hrDur ? Math.round(hrSum / hrDur) : null,
+      max_hr: maxHr || null,
+      calories: Math.round(cal) || null
+    };
+  });
+}
+
+// ---------- Sammenligning og statistikk ----------
+function renderPlan() {
+  $('planView').classList.remove('hidden');
+  $('planTitle').textContent = currentPlan.name;
+  const used = new Set();
+  const t = today();
+  let plannedKm = 0, doneKm = 0, plannedCount = 0, doneCount = 0;
+
+  const rows = sessions.map(s => {
+    const match = activities.find(a => a.date === s.date && a.sport === s.sport && !used.has(a.id));
+    if (match) used.add(match.id);
+    plannedCount++;
+    plannedKm += s.planned_km || 0;
+    let status, cls;
+    if (!match) {
+      status = s.date < t ? 'Mangler' : 'Planlagt';
+      cls = s.date < t ? 'miss' : '';
+    } else {
+      doneCount++;
+      doneKm += match.distance_km || 0;
+      const ratio = s.planned_km ? match.distance_km / s.planned_km
+                  : s.planned_min ? match.duration_min / s.planned_min : 1;
+      status = ratio >= 0.9 ? 'Gjennomført' : 'Delvis';
+      cls = ratio >= 0.9 ? 'ok' : 'part';
+    }
+    const actual = match ? `${fmt(match.distance_km,2)} km · ${fmt(match.duration_min,0)} min` +
+      (match.avg_hr ? ` · ${match.avg_hr} bpm` : '') : '–';
+    const planned = [s.planned_km ? s.planned_km + ' km' : '', s.planned_min ? s.planned_min + ' min' : '']
+      .filter(Boolean).join(' · ') || '–';
+    return `<tr><td>${s.date}</td><td>${s.sport}</td><td>${s.title || ''}</td>
+      <td>${planned}</td><td>${actual}</td><td class="${cls}">${status}</td>
+      <td><button class="del" onclick="deleteSession('${s.id}')">×</button></td></tr>`;
+  });
+  $('compareBody').innerHTML = rows.join('') || '<tr><td colspan="7">Ingen økter ennå.</td></tr>';
+
+  const compliance = plannedCount ? Math.round(doneCount / plannedCount * 100) : 0;
+  const actualKm = activities.reduce((sum, a) => sum + (a.distance_km || 0), 0);
+  $('stats').innerHTML = `
+    <div class="stat">Gjennomført<b>${doneCount} / ${plannedCount}</b></div>
+    <div class="stat">Etterlevelse<b>${compliance} %</b></div>
+    <div class="stat">Planlagt km<b>${fmt(plannedKm,1)}</b></div>
+    <div class="stat">Faktisk km i perioden<b>${fmt(actualKm,1)}</b></div>`;
+
+  const matchedIds = used;
+  const unmatched = activities.filter(a => !matchedIds.has(a.id));
+  $('unmatched').innerHTML = unmatched.length ? unmatched.map(a =>
+    `<div><span>${a.date} · ${a.sport} · ${fmt(a.distance_km,2)} km · ${fmt(a.duration_min,0)} min</span></div>`).join('')
+    : '<p>Alle aktiviteter i perioden er knyttet til planen.</p>';
+}
+
+init();
+</script>
+</body>
+</html>
